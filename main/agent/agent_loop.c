@@ -92,7 +92,12 @@ static void agent_loop_task(void *arg)
         return;
     }
 
+#if MIMI_ENABLE_TOOLS
     const char *tools_json = tool_registry_get_tools_json();
+#else
+    const char *tools_json = NULL;
+    ESP_LOGI(TAG, "Tools disabled by build config (MIMI_ENABLE_TOOLS=0)");
+#endif
 
     while (1) {
         mimi_msg_t msg;
@@ -122,8 +127,8 @@ static void agent_loop_task(void *arg)
         int iteration = 0;
 
         while (iteration < MIMI_AGENT_MAX_TOOL_ITER) {
-            /* Send "working" indicator before each API call */
-            {
+            /* Send "working" indicator before each API call (skip for voice channel) */
+            if (strcmp(msg.channel, MIMI_CHAN_VOICE) != 0) {
                 static const char *working_phrases[] = {
                     "mimi\xF0\x9F\x98\x97is working...",
                     "mimi\xF0\x9F\x90\xBE is thinking...",

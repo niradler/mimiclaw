@@ -21,6 +21,9 @@
 #include "cli/serial_cli.h"
 #include "proxy/http_proxy.h"
 #include "tools/tool_registry.h"
+#include "audio/audio_hal.h"
+#include "display/display_driver.h"
+#include "voice/voice_channel.h"
 
 static const char *TAG = "mimi";
 
@@ -72,6 +75,8 @@ static void outbound_dispatch_task(void *arg)
             telegram_send_message(msg.chat_id, msg.content);
         } else if (strcmp(msg.channel, MIMI_CHAN_WEBSOCKET) == 0) {
             ws_server_send(msg.chat_id, msg.content);
+        } else if (strcmp(msg.channel, MIMI_CHAN_VOICE) == 0) {
+            voice_channel_send_response(msg.content);
         } else {
             ESP_LOGW(TAG, "Unknown channel: %s", msg.channel);
         }
@@ -100,6 +105,10 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(init_spiffs());
 
+    /* Initialize hardware peripherals */
+    ESP_ERROR_CHECK(audio_hal_init());
+    ESP_ERROR_CHECK(display_init());
+
     /* Initialize subsystems */
     ESP_ERROR_CHECK(message_bus_init());
     ESP_ERROR_CHECK(memory_store_init());
@@ -127,6 +136,7 @@ void app_main(void)
             ESP_ERROR_CHECK(telegram_bot_start());
             ESP_ERROR_CHECK(agent_loop_start());
             ESP_ERROR_CHECK(ws_server_start());
+            ESP_ERROR_CHECK(voice_channel_init());
 
             /* Outbound dispatch task */
             xTaskCreatePinnedToCore(
