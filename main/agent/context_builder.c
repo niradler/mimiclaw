@@ -1,6 +1,7 @@
 #include "context_builder.h"
 #include "mimi_config.h"
 #include "memory/memory_store.h"
+#include "skills/skill_loader.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -43,7 +44,11 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
         "- read_file: Read a file from SPIFFS (path must start with /spiffs/).\n"
         "- write_file: Write/overwrite a file on SPIFFS.\n"
         "- edit_file: Find-and-replace edit a file on SPIFFS.\n"
-        "- list_dir: List files on SPIFFS, optionally filter by prefix.\n\n"
+        "- list_dir: List files on SPIFFS, optionally filter by prefix.\n"
+        "- cron_add: Schedule a recurring or one-shot task. The message will trigger an agent turn when the job fires.\n"
+        "- cron_list: List all scheduled cron jobs.\n"
+        "- cron_remove: Remove a scheduled cron job by ID.\n\n"
+        "When using cron_add for Telegram delivery, always set channel='telegram' and a valid numeric chat_id.\n\n"
         "Use tools when needed. Provide your final answer as text after using tools.\n\n"
         "## Memory\n"
         "You have persistent memory stored on local flash:\n"
@@ -55,7 +60,11 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
         "- Always read_file MEMORY.md before writing, so you can edit_file to update without losing existing content.\n"
         "- Use get_current_time to know today's date before writing daily notes.\n"
         "- Keep MEMORY.md concise and organized — summarize, don't dump raw conversation.\n"
-        "- You should proactively save memory without being asked. If the user tells you their name, preferences, or important facts, persist them immediately.\n");
+        "- You should proactively save memory without being asked. If the user tells you their name, preferences, or important facts, persist them immediately.\n\n"
+        "## Skills\n"
+        "Skills are specialized instruction files stored in /spiffs/skills/.\n"
+        "When a task matches a skill, read the full skill file for detailed instructions.\n"
+        "You can create new skills using write_file to /spiffs/skills/<name>.md.\n");
 
     /* Bootstrap files */
     off = append_file(buf, size, off, MIMI_SOUL_FILE, "Personality");
@@ -71,6 +80,16 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
     char recent_buf[4096];
     if (memory_read_recent(recent_buf, sizeof(recent_buf), 3) == ESP_OK && recent_buf[0]) {
         off += snprintf(buf + off, size - off, "\n## Recent Notes\n\n%s\n", recent_buf);
+    }
+
+    /* Skills */
+    char skills_buf[2048];
+    size_t skills_len = skill_loader_build_summary(skills_buf, sizeof(skills_buf));
+    if (skills_len > 0) {
+        off += snprintf(buf + off, size - off,
+            "\n## Available Skills\n\n"
+            "Available skills (use read_file to load full instructions):\n%s\n",
+            skills_buf);
     }
 
     ESP_LOGI(TAG, "System prompt built: %d bytes", (int)off);

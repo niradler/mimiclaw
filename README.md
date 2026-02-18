@@ -1,14 +1,18 @@
 # MimiClaw: Pocket AI Assistant on a $5 Chip
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-mimiclaw-blue.svg)](https://deepwiki.com/memovai/mimiclaw)
-[![Discord](https://img.shields.io/badge/Discord-mimiclaw-5865F2?logo=discord&logoColor=white)](https://discord.gg/r8ZxSvB8Yr)
-[![X](https://img.shields.io/badge/X-@ssslvky-black?logo=x)](https://x.com/ssslvky)
-
-**[English](README.md) | [中文](README_CN.md)**
+<p align="center">
+  <img src="assets/banner.png" alt="MimiClaw" width="500" />
+</p>
 
 <p align="center">
-  <img src="assets/banner.png" alt="MimiClaw" width="480" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://deepwiki.com/memovai/mimiclaw"><img src="https://img.shields.io/badge/DeepWiki-mimiclaw-blue.svg" alt="DeepWiki"></a>
+  <a href="https://discord.gg/r8ZxSvB8Yr"><img src="https://img.shields.io/badge/Discord-mimiclaw-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://x.com/ssslvky"><img src="https://img.shields.io/badge/X-@ssslvky-black?logo=x" alt="X"></a>
+</p>
+
+<p align="center">
+  <strong><a href="README.md">English</a> | <a href="README_CN.md">中文</a> | <a href="README_JA.md">日本語</a></strong>
 </p>
 
 **The world's first AI assistant(OpenClaw) on a $5 chip. No Linux. No Node.js. Just pure C**
@@ -27,7 +31,7 @@ MimiClaw turns a tiny ESP32-S3 board into a personal AI assistant. Plug it into 
 
 ![](assets/mimiclaw.png)
 
-You send a message on Telegram. The ESP32-S3 picks it up over WiFi, feeds it into an agent loop — Claude thinks, calls tools, reads memory — and sends the reply back. Everything runs on a single $5 chip with all your data stored locally on flash.
+You send a message on Telegram. The ESP32-S3 picks it up over WiFi, feeds it into an agent loop — the LLM thinks, calls tools, reads memory — and sends the reply back. Supports both **Anthropic (Claude)** and **OpenAI (GPT)** as providers, switchable at runtime. Everything runs on a single $5 chip with all your data stored locally on flash.
 
 ## Quick Start
 
@@ -36,7 +40,7 @@ You send a message on Telegram. The ESP32-S3 picks it up over WiFi, feeds it int
 - An **ESP32-S3 dev board** with 16 MB flash and 8 MB PSRAM (e.g. Xiaozhi AI board, ~$10)
 - A **USB Type-C cable**
 - A **Telegram bot token** — talk to [@BotFather](https://t.me/BotFather) on Telegram to create one
-- An **Anthropic API key** — from [console.anthropic.com](https://console.anthropic.com)
+- An **Anthropic API key** — from [console.anthropic.com](https://console.anthropic.com), or an **OpenAI API key** — from [platform.openai.com](https://platform.openai.com)
 
 ### Install
 
@@ -65,6 +69,7 @@ Edit `main/mimi_secrets.h`:
 #define MIMI_SECRET_WIFI_PASS       "YourWiFiPassword"
 #define MIMI_SECRET_TG_TOKEN        "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 #define MIMI_SECRET_API_KEY         "sk-ant-api03-xxxxx"
+#define MIMI_SECRET_MODEL_PROVIDER  "anthropic"     // "anthropic" or "openai"
 #define MIMI_SECRET_SEARCH_KEY      ""              // optional: Brave Search API key
 #define MIMI_SECRET_PROXY_HOST      ""              // optional: e.g. "10.0.0.1"
 #define MIMI_SECRET_PROXY_PORT      ""              // optional: e.g. "7897"
@@ -103,8 +108,9 @@ Connect via serial to configure or debug. **Config commands** let you change set
 ```
 mimi> wifi_set MySSID MyPassword   # change WiFi network
 mimi> set_tg_token 123456:ABC...   # change Telegram bot token
-mimi> set_api_key sk-ant-api03-... # change Anthropic API key
-mimi> set_model claude-sonnet-4-5  # change LLM model
+mimi> set_api_key sk-ant-api03-... # change API key (Anthropic or OpenAI)
+mimi> set_model_provider openai    # switch provider (anthropic|openai)
+mimi> set_model gpt-4o             # change LLM model
 mimi> set_proxy 127.0.0.1 7897  # set HTTP proxy
 mimi> clear_proxy                  # remove proxy
 mimi> set_search_key BSA...        # set Brave Search API key
@@ -121,7 +127,9 @@ mimi> memory_write "content"   # write to MEMORY.md
 mimi> heap_info                # how much RAM is free?
 mimi> session_list             # list all chat sessions
 mimi> session_clear 12345      # wipe a conversation
-mimi> restart                  # reboot
+mimi> heartbeat_trigger           # manually trigger a heartbeat check
+mimi> cron_start                  # start cron scheduler now
+mimi> restart                     # reboot
 ```
 
 ## Memory
@@ -133,19 +141,36 @@ MimiClaw stores everything as plain text files you can read and edit:
 | `SOUL.md` | The bot's personality — edit this to change how it behaves |
 | `USER.md` | Info about you — name, preferences, language |
 | `MEMORY.md` | Long-term memory — things the bot should always remember |
+| `HEARTBEAT.md` | Task list the bot checks periodically and acts on autonomously |
+| `cron.json` | Scheduled jobs — recurring or one-shot tasks created by the AI |
 | `2026-02-05.md` | Daily notes — what happened today |
 | `tg_12345.jsonl` | Chat history — your conversation with the bot |
 
 ## Tools
 
-MimiClaw uses Anthropic's tool use protocol — Claude can call tools during a conversation and loop until the task is done (ReAct pattern).
+MimiClaw supports tool calling for both Anthropic and OpenAI — the LLM can call tools during a conversation and loop until the task is done (ReAct pattern).
 
 | Tool | Description |
 |------|-------------|
 | `web_search` | Search the web via Brave Search API for current information |
 | `get_current_time` | Fetch current date/time via HTTP and set the system clock |
+| `cron_add` | Schedule a recurring or one-shot task (the LLM creates cron jobs on its own) |
+| `cron_list` | List all scheduled cron jobs |
+| `cron_remove` | Remove a cron job by ID |
 
 To enable web search, set a [Brave Search API key](https://brave.com/search/api/) via `MIMI_SECRET_SEARCH_KEY` in `mimi_secrets.h`.
+
+## Cron Tasks
+
+MimiClaw has a built-in cron scheduler that lets the AI schedule its own tasks. The LLM can create recurring jobs ("every N seconds") or one-shot jobs ("at unix timestamp") via the `cron_add` tool. When a job fires, its message is injected into the agent loop — so the AI wakes up, processes the task, and responds.
+
+Jobs are persisted to SPIFFS (`cron.json`) and survive reboots. Example use cases: daily summaries, periodic reminders, scheduled check-ins.
+
+## Heartbeat
+
+The heartbeat service periodically reads `HEARTBEAT.md` from SPIFFS and checks for actionable tasks. If uncompleted items are found (anything that isn't an empty line, a header, or a checked `- [x]` box), it sends a prompt to the agent loop so the AI can act on them autonomously.
+
+This turns MimiClaw into a proactive assistant — write tasks to `HEARTBEAT.md` and the bot will pick them up on the next heartbeat cycle (default: every 30 minutes).
 
 ## Also Included
 
@@ -153,7 +178,10 @@ To enable web search, set a [Brave Search API key](https://brave.com/search/api/
 - **OTA updates** — flash new firmware over WiFi, no USB needed
 - **Dual-core** — network I/O and AI processing run on separate CPU cores
 - **HTTP proxy** — CONNECT tunnel support for restricted networks
-- **Tool use** — ReAct agent loop with Anthropic tool use protocol
+- **Multi-provider** — supports both Anthropic (Claude) and OpenAI (GPT), switchable at runtime
+- **Cron scheduler** — the AI can schedule its own recurring and one-shot tasks, persisted across reboots
+- **Heartbeat** — periodically checks a task file and prompts the AI to act autonomously
+- **Tool use** — ReAct agent loop with tool calling for both providers
 
 ## For Developers
 
