@@ -23,12 +23,11 @@
 #include "tools/tool_registry.h"
 #include "cron/cron_service.h"
 #include "heartbeat/heartbeat.h"
-#include "display/display.h"
-#include "buttons/button_driver.h"
-#include "ui/config_screen.h"
-#include "imu/imu_manager.h"
-#include "rgb/rgb.h"
 #include "skills/skill_loader.h"
+#include "rgb/rgb.h"
+#include "audio/audio_hal.h"
+#include "display/display_driver.h"
+#include "voice/voice_channel.h"
 
 static const char *TAG = "mimi";
 
@@ -83,17 +82,13 @@ static void outbound_dispatch_task(void *arg)
             } else {
                 ESP_LOGI(TAG, "Telegram send success for %s (%d bytes)", msg.chat_id, (int)strlen(msg.content));
             }
-            if (config_screen_is_active()) {
-                config_screen_toggle();
-            }
-            char title[48];
-            snprintf(title, sizeof(title), "TG OUT %s", msg.chat_id);
-            display_show_message_card(title, msg.content);
         } else if (strcmp(msg.channel, MIMI_CHAN_WEBSOCKET) == 0) {
             esp_err_t ws_err = ws_server_send(msg.chat_id, msg.content);
             if (ws_err != ESP_OK) {
                 ESP_LOGW(TAG, "WS send failed for %s: %s", msg.chat_id, esp_err_to_name(ws_err));
             }
+        } else if (strcmp(msg.channel, MIMI_CHAN_VOICE) == 0) {
+            voice_channel_send_response(msg.content);
         } else if (strcmp(msg.channel, MIMI_CHAN_SYSTEM) == 0) {
             ESP_LOGI(TAG, "System message [%s]: %.128s", msg.chat_id, msg.content);
         } else {
@@ -108,7 +103,6 @@ void app_main(void)
 {
     /* Silence noisy components */
     esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_WARN);
-    esp_log_level_set("QRCODE", ESP_LOG_WARN);
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  MimiClaw - ESP32-S3 AI Agent");
@@ -120,20 +114,16 @@ void app_main(void)
     ESP_LOGI(TAG, "PSRAM free:    %d bytes",
              (int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    /* Display + input */
-    ESP_ERROR_CHECK(display_init());
-    display_show_banner();
-    ESP_ERROR_CHECK(rgb_init());
-    rgb_set(255, 0, 0);
-    button_Init();
-    config_screen_init();
-    imu_manager_init();
-    imu_manager_set_shake_callback(config_screen_toggle);
-
     /* Phase 1: Core infrastructure */
     ESP_ERROR_CHECK(init_nvs());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(init_spiffs());
+
+    /* Hardware peripherals */
+    ESP_ERROR_CHECK(audio_hal_init());
+    ESP_ERROR_CHECK(display_init());
+    ESP_ERROR_CHECK(rgb_init());
+    rgb_set(255, 0, 0);
 
     /* Initialize subsystems */
     ESP_ERROR_CHECK(message_bus_init());
@@ -174,6 +164,7 @@ void app_main(void)
             cron_service_start();
             heartbeat_start();
             ESP_ERROR_CHECK(ws_server_start());
+            ESP_ERROR_CHECK(voice_channel_init());
 
             ESP_LOGI(TAG, "All services started!");
         } else {

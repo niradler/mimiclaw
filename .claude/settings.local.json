@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth:*)",
+      "Bash(gh api:*)",
+      "Bash(cmd.exe /c \"c:\\\\Projects\\\\embedded\\\\mimiclaw\\\\build_only.bat\")",
+      "Bash(cmd.exe /c \"set IDF_PATH=C:\\\\esp\\\\v5.5.2\\\\esp-idf && set IDF_TOOLS_PATH=C:\\\\Espressif && set PATH=C:\\\\Espressif\\\\python_env\\\\idf5.5_py3.11_env\\\\Scripts;%PATH% && set PATH=C:\\\\Espressif\\\\tools\\\\idf-git\\\\2.44.0\\\\cmd;%PATH% && call C:\\\\esp\\\\v5.5.2\\\\esp-idf\\\\export.bat >nul 2>&1 && cd /d c:\\\\Projects\\\\embedded\\\\mimiclaw && python C:\\\\esp\\\\v5.5.2\\\\esp-idf\\\\tools\\\\idf.py build 2>&1\")",
+      "Bash(cmd.exe //c \"c:\\\\Projects\\\\embedded\\\\mimiclaw\\\\build_only.bat > c:\\\\Projects\\\\embedded\\\\mimiclaw\\\\build_out.txt 2>&1\")",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(idf.py set-target:*)",
+      "Bash(cmd.exe //c \"c:/Projects/embedded/mimiclaw/build_only.bat\")",
+      "Bash(cmd.exe //C:*)",
+      "Bash(cmd.exe //c build_only.bat)",
+      "Bash(cmd.exe //c \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && build_only.bat\")",
+      "Bash(cmd.exe //c \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && C:\\\\Projects\\\\embedded\\\\mimiclaw\\\\build_only.bat\")",
+      "Bash(cmd.exe //c \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && C:\\\\Projects\\\\embedded\\\\mimiclaw\\\\flash.bat\")",
+      "Bash(cmd.exe //c \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && C:\\\\Projects\\\\embedded\\\\mimiclaw\\\\flash_only.bat\")",
+      "Bash(ipconfig:*)",
+      "WebFetch(domain:docs.espressif.com)",
+      "Bash(find:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:components.espressif.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cmd.exe //c \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && rmdir /s /q build\")",
+      "Bash(cmd.exe /C \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && build_only.bat\")",
+      "Bash(cmd.exe /C \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && C:\\\\esp\\\\v5.5.2\\\\esp-idf\\\\export.bat >nul 2>&1 && python C:\\\\esp\\\\v5.5.2\\\\esp-idf\\\\tools\\\\idf.py build\")",
+      "Bash(cmd.exe /C \"cd /d C:\\\\Projects\\\\embedded\\\\mimiclaw && build_only.bat > build_out.txt 2>&1\")",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(python -c:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

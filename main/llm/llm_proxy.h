@@ -28,6 +28,12 @@ esp_err_t llm_set_provider(const char *provider);
 esp_err_t llm_set_model(const char *model);
 
 /**
+ * Save a custom API base URL to NVS. (e.g. LiteLLM proxy "http://host:port/v1/...")
+ * Pass empty string to clear and use provider default.
+ */
+esp_err_t llm_set_api_url(const char *api_url);
+
+/**
  * Send a chat completion request to the configured LLM API (non-streaming).
  *
  * @param system_prompt  System prompt string

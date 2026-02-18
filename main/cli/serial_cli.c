@@ -11,6 +11,13 @@
 #include "cron/cron_service.h"
 #include "heartbeat/heartbeat.h"
 #include "skills/skill_loader.h"
+#include "audio/audio_hal.h"
+#include "audio/audio_player.h"
+#include "audio/test_audio.h"
+#include "display/display_driver.h"
+#include "voice/stt_client.h"
+#include "voice/tts_client.h"
+#include "voice/voice_channel.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -489,6 +496,24 @@ static int cmd_config_reset(int argc, char **argv)
     return 0;
 }
 
+/* --- set_api_url command --- */
+static struct {
+    struct arg_str *url;
+    struct arg_end *end;
+} api_url_args;
+
+static int cmd_set_api_url(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&api_url_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, api_url_args.end, argv[0]);
+        return 1;
+    }
+    llm_set_api_url(api_url_args.url->sval[0]);
+    printf("API URL set.\n");
+    return 0;
+}
+
 /* --- heartbeat_trigger command --- */
 static int cmd_heartbeat_trigger(int argc, char **argv)
 {
@@ -512,6 +537,86 @@ static int cmd_cron_start(int argc, char **argv)
 
     printf("Failed to start cron service: %s\n", esp_err_to_name(err));
     return 1;
+}
+
+/* --- audio_test command --- */
+static int cmd_audio_test(int argc, char **argv)
+{
+    audio_test_run();
+    return 0;
+}
+
+/* --- stt_test command --- */
+static struct {
+    struct arg_int *seconds;
+    struct arg_end *end;
+} stt_test_args;
+
+static int cmd_stt_test(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&stt_test_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, stt_test_args.end, argv[0]);
+        return 1;
+    }
+    int secs = stt_test_args.seconds->ival[0];
+    if (secs <= 0 || secs > 30) {
+        printf("Seconds must be 1-30\n");
+        return 1;
+    }
+    esp_codec_dev_handle_t in_dev = audio_hal_get_input_dev();
+    if (!in_dev) { printf("No input device\n"); return 1; }
+
+    size_t total_bytes = MIMI_AUDIO_SAMPLE_RATE * sizeof(int16_t) * secs;
+    int16_t *buf = heap_caps_malloc(total_bytes, MALLOC_CAP_SPIRAM);
+    if (!buf) { printf("Out of memory\n"); return 1; }
+
+    printf("Recording %d s...\n", secs);
+    size_t read_bytes = 0;
+    esp_codec_dev_read(in_dev, buf, total_bytes, &read_bytes);
+    printf("Recorded %u bytes. Sending to STT...\n", (unsigned)read_bytes);
+
+    char *transcript = calloc(1, 1024);
+    if (transcript) {
+        esp_err_t err = stt_transcribe_pcm(buf, read_bytes / sizeof(int16_t),
+                                           MIMI_AUDIO_SAMPLE_RATE, transcript, 1024);
+        if (err == ESP_OK) {
+            printf("STT: %s\n", transcript);
+        } else {
+            printf("STT failed: %s\n", esp_err_to_name(err));
+        }
+        free(transcript);
+    }
+    free(buf);
+    return 0;
+}
+
+/* --- tts_test command --- */
+static struct {
+    struct arg_str *text;
+    struct arg_end *end;
+} tts_test_args;
+
+static int cmd_tts_test(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&tts_test_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, tts_test_args.end, argv[0]);
+        return 1;
+    }
+    const char *text = tts_test_args.text->sval[0];
+    printf("Synthesizing TTS: %s\n", text);
+    uint8_t *mp3_buf = NULL;
+    size_t mp3_len = 0;
+    esp_err_t err = tts_synthesize(text, &mp3_buf, &mp3_len);
+    if (err != ESP_OK) {
+        printf("TTS failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    printf("TTS OK (%u bytes), playing...\n", (unsigned)mp3_len);
+    audio_player_play_mp3(mp3_buf, mp3_len);
+    free(mp3_buf);
+    return 0;
 }
 
 static int cmd_tool_exec(int argc, char **argv)
@@ -632,6 +737,17 @@ esp_err_t serial_cli_init(void)
         .argtable = &provider_args,
     };
     esp_console_cmd_register(&provider_cmd);
+
+    /* set_api_url */
+    api_url_args.url = arg_str1(NULL, NULL, "<url>", "Custom API URL (empty to clear)");
+    api_url_args.end = arg_end(1);
+    esp_console_cmd_t api_url_cmd = {
+        .command = "set_api_url",
+        .help = "Set custom LLM API base URL (e.g. LiteLLM proxy)",
+        .func = &cmd_set_api_url,
+        .argtable = &api_url_args,
+    };
+    esp_console_cmd_register(&api_url_cmd);
 
     /* skill_list */
     esp_console_cmd_t skill_list_cmd = {
@@ -779,6 +895,36 @@ esp_err_t serial_cli_init(void)
         .func = &cmd_tool_exec,
     };
     esp_console_cmd_register(&tool_exec_cmd);
+
+    /* audio_test */
+    esp_console_cmd_t audio_test_cmd = {
+        .command = "audio_test",
+        .help = "Run audio hardware self-test (tone + codec check)",
+        .func = &cmd_audio_test,
+    };
+    esp_console_cmd_register(&audio_test_cmd);
+
+    /* stt_test */
+    stt_test_args.seconds = arg_int1(NULL, NULL, "<seconds>", "Recording duration (1-30)");
+    stt_test_args.end = arg_end(1);
+    esp_console_cmd_t stt_test_cmd = {
+        .command = "stt_test",
+        .help = "Record audio and transcribe with STT",
+        .func = &cmd_stt_test,
+        .argtable = &stt_test_args,
+    };
+    esp_console_cmd_register(&stt_test_cmd);
+
+    /* tts_test */
+    tts_test_args.text = arg_str1(NULL, NULL, "<text>", "Text to synthesize and play");
+    tts_test_args.end = arg_end(1);
+    esp_console_cmd_t tts_test_cmd = {
+        .command = "tts_test",
+        .help = "Synthesize text with TTS and play through speaker",
+        .func = &cmd_tts_test,
+        .argtable = &tts_test_args,
+    };
+    esp_console_cmd_register(&tts_test_cmd);
 
     /* restart */
     esp_console_cmd_t restart_cmd = {
