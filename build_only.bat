@@ -31,4 +31,21 @@ set "PATH=C:\Espressif\python_env\idf5.5_py3.11_env\Scripts;%PATH%"
 set "PATH=C:\Espressif\tools\idf-git\2.44.0\cmd;%PATH%"
 cd /d "C:\Projects\embedded\mimiclaw"
 call "%IDF_PATH%\export.bat" >nul 2>&1
+
+REM Full clean when sdkconfig.defaults is newer than sdkconfig (or sdkconfig missing)
+set NEEDS_CLEAN=0
+if not exist sdkconfig set NEEDS_CLEAN=1
+if exist sdkconfig (
+    for /f %%A in ('powershell -Command "if ((Get-Item sdkconfig.defaults.esp32s3).LastWriteTime -gt (Get-Item sdkconfig).LastWriteTime) { echo 1 } else { echo 0 }"') do set NEEDS_CLEAN=%%A
+)
+if "%NEEDS_CLEAN%"=="1" (
+    echo [CLEAN] sdkconfig.defaults changed - running fullclean...
+    if exist sdkconfig del /f sdkconfig
+    if exist build rmdir /s /q build
+    echo [CLEAN] Setting target esp32s3...
+    python "%IDF_PATH%\tools\idf.py" set-target esp32s3 2>&1
+    echo [CLEAN] Done.
+    echo.
+)
+
 python "%IDF_PATH%\tools\idf.py" build 2>&1

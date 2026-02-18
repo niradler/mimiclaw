@@ -77,14 +77,23 @@ static void apply_audio_cleanup(int16_t *samples, size_t num_samples, uint32_t s
         samples[i] = (int16_t)sample;
     }
     
-    size_t fade_samples = (size_t)(0.05f * sample_rate);
+    size_t fade_samples = (size_t)(0.3f * sample_rate);
     if (fade_samples > num_samples / 2) fade_samples = num_samples / 2;
-    
+
     for (size_t i = 0; i < fade_samples; i++) {
         size_t idx = num_samples - fade_samples + i;
-        float fade = 1.0f - ((float)i / (float)fade_samples);
-        samples[idx] = (int16_t)((float)samples[idx] * fade);
+        float f = 1.0f - ((float)i / (float)fade_samples);
+        samples[idx] = (int16_t)((float)samples[idx] * f);
     }
+
+    // TODO: TEMP FIX - zeroing last 3s suppresses resampler/TTS tail noise.
+    // Root cause: 24kHz→16kHz resampler leaves a noisy oscillating tail in the
+    // last few seconds of PCM. Proper fix: use a proper anti-aliasing FIR filter
+    // in tts_client.c resampler, or request 16kHz directly from TTS API.
+    // Tracked in AUDIO_POP_NOISE_DEBUG.md
+    size_t silence_samples = (size_t)(3.0f * sample_rate);
+    if (silence_samples > num_samples / 2) silence_samples = num_samples / 2;
+    memset(samples + num_samples - silence_samples, 0, silence_samples * sizeof(int16_t));
 }
 
 /* DMA drain time in ms: one full DMA buffer depth + margin */
@@ -133,15 +142,25 @@ static void flush_dma_silence(esp_codec_dev_handle_t dev)
     }
 }
 
-/* Clean shutdown: silence flush → hardware mute → wait DMA drain → disable PA → unmute */
+/* Clean shutdown (xiaozhi pattern):
+ * flush silence → esp_codec_dev_close (ES8311 soft-mute → DAC off → I2S TX disable)
+ * → PA off → re-open codec (ready for next session) */
 static void audio_shutdown(esp_codec_dev_handle_t dev)
 {
     flush_dma_silence(dev);
-    esp_codec_dev_set_out_mute(dev, true);
-    vTaskDelay(pdMS_TO_TICKS(DMA_DRAIN_MS));
-    audio_hal_speaker_pa(false);
+
+    esp_codec_dev_close(dev);
+
     vTaskDelay(pdMS_TO_TICKS(20));
-    esp_codec_dev_set_out_mute(dev, false);
+    audio_hal_speaker_pa(false);
+
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = MIMI_AUDIO_BITS,
+        .channel        = 2,
+        .sample_rate    = MIMI_AUDIO_SAMPLE_RATE,
+    };
+    esp_codec_dev_open(dev, &fs);
+    esp_codec_dev_set_out_vol(dev, 60);
 }
 
 esp_err_t audio_player_play_tone(uint32_t freq_hz, uint32_t duration_ms)
@@ -216,6 +235,122 @@ esp_err_t audio_player_play_pcm(const int16_t *pcm_data, size_t pcm_len)
 
     audio_shutdown(dev);
     ESP_LOGI(TAG, "PCM playback complete");
+    return ret;
+}
+
+esp_err_t audio_player_play_pcm_diag(const int16_t *pcm_data, size_t pcm_len, int mode)
+{
+    esp_codec_dev_handle_t dev = audio_hal_get_output_dev();
+    if (!dev) return ESP_ERR_INVALID_STATE;
+    if (!pcm_data || pcm_len == 0) return ESP_ERR_INVALID_ARG;
+
+    size_t total_samples = pcm_len / sizeof(int16_t);
+    size_t play_samples = total_samples;
+
+    int16_t *buf = heap_caps_malloc(pcm_len, MALLOC_CAP_SPIRAM);
+    if (!buf) return ESP_ERR_NO_MEM;
+    memcpy(buf, pcm_data, pcm_len);
+
+    switch (mode) {
+        case 1: {
+            size_t chop = MIMI_AUDIO_SAMPLE_RATE;
+            if (chop >= play_samples) chop = play_samples / 2;
+            play_samples -= chop;
+            size_t fade = (size_t)(0.05f * MIMI_AUDIO_SAMPLE_RATE);
+            if (fade > play_samples) fade = play_samples;
+            for (size_t i = 0; i < fade; i++) {
+                size_t idx = play_samples - fade + i;
+                float f = 1.0f - ((float)i / (float)fade);
+                buf[idx] = (int16_t)((float)buf[idx] * f);
+            }
+            ESP_LOGI(TAG, "[diag] === MODE 1: chop_tail ===");
+            ESP_LOGI(TAG, "[diag] Dropped last 1s (%d samples). If noise gone → noise is IN the PCM tail (TTS/resampling artifact)", (int)chop);
+            break;
+        }
+        case 2: {
+            biquad_filter_t hp, lp;
+            biquad_init_highpass(&hp, 80.0f, (float)MIMI_AUDIO_SAMPLE_RATE);
+            biquad_init_lowpass(&lp, 7000.0f, (float)MIMI_AUDIO_SAMPLE_RATE);
+            for (size_t i = 0; i < total_samples; i++) {
+                float s = (float)buf[i];
+                s = biquad_process(&hp, s);
+                s = biquad_process(&lp, s);
+                if (s > 32767.0f) s = 32767.0f;
+                if (s < -32768.0f) s = -32768.0f;
+                buf[i] = (int16_t)s;
+            }
+            size_t fade = (size_t)(2.0f * MIMI_AUDIO_SAMPLE_RATE);
+            if (fade > total_samples / 2) fade = total_samples / 2;
+            for (size_t i = 0; i < fade; i++) {
+                size_t idx = total_samples - fade + i;
+                float f = 1.0f - ((float)i / (float)fade);
+                buf[idx] = (int16_t)((float)buf[idx] * f);
+            }
+            ESP_LOGI(TAG, "[diag] === MODE 2: long_fade ===");
+            ESP_LOGI(TAG, "[diag] 2s fade-out (%d samples). If noise gone → 50ms fade too short, audio wasn't zeroed cleanly", (int)fade);
+            break;
+        }
+        case 3: {
+            apply_audio_cleanup(buf, total_samples, MIMI_AUDIO_SAMPLE_RATE);
+            int clipped = 0;
+            for (size_t i = 0; i < total_samples; i++) {
+                if (buf[i] > 8000)       { buf[i] = 8000;  clipped++; }
+                else if (buf[i] < -8000) { buf[i] = -8000; clipped++; }
+            }
+            ESP_LOGI(TAG, "[diag] === MODE 3: peak_clamp ===");
+            ESP_LOGI(TAG, "[diag] Hard-clamped %d samples to ±8000. If noise gone/reduced → amplitude spikes are the culprit", clipped);
+            break;
+        }
+        case 4: {
+            apply_audio_cleanup(buf, total_samples, MIMI_AUDIO_SAMPLE_RATE);
+            ESP_LOGI(TAG, "[diag] === MODE 4: no_pa_off ===");
+            ESP_LOGI(TAG, "[diag] Will skip PA GPIO disable. If noise gone → PA click at GPIO toggle is the culprit");
+            break;
+        }
+        case 5: {
+            apply_audio_cleanup(buf, total_samples, MIMI_AUDIO_SAMPLE_RATE);
+            ESP_LOGI(TAG, "[diag] === MODE 5: mute_first ===");
+            ESP_LOGI(TAG, "[diag] Will mute codec BEFORE silence flush. If noise gone → codec leaks during DMA drain");
+            break;
+        }
+        default: {
+            apply_audio_cleanup(buf, total_samples, MIMI_AUDIO_SAMPLE_RATE);
+            ESP_LOGI(TAG, "[diag] === MODE 0: baseline (normal processing) ===");
+            break;
+        }
+    }
+
+    audio_hal_speaker_pa(true);
+    esp_err_t ret = write_stereo(dev, buf, play_samples);
+    free(buf);
+
+    esp_codec_dev_sample_info_t reopen_fs = {
+        .bits_per_sample = MIMI_AUDIO_BITS,
+        .channel        = 2,
+        .sample_rate    = MIMI_AUDIO_SAMPLE_RATE,
+    };
+
+    if (mode == 4) {
+        flush_dma_silence(dev);
+        esp_codec_dev_close(dev);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        esp_codec_dev_open(dev, &reopen_fs);
+        esp_codec_dev_set_out_vol(dev, 60);
+        ESP_LOGI(TAG, "[diag] Shutdown done (PA left ON - if noise gone → PA toggle is culprit)");
+    } else if (mode == 5) {
+        flush_dma_silence(dev);
+        audio_hal_speaker_pa(false);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        esp_codec_dev_close(dev);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        esp_codec_dev_open(dev, &reopen_fs);
+        esp_codec_dev_set_out_vol(dev, 60);
+        ESP_LOGI(TAG, "[diag] Shutdown done (PA off BEFORE codec close)");
+    } else {
+        audio_shutdown(dev);
+    }
+
+    ESP_LOGI(TAG, "[diag] playback complete");
     return ret;
 }
 

@@ -2,6 +2,7 @@
 #include "mimi_config.h"
 
 #include <string.h>
+#include <stdbool.h>
 #include "esp_log.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
@@ -277,3 +278,13 @@ esp_err_t display_set_state(display_state_t state)
     }
     return display_fill_color(color);
 }
+
+/* Stubs for upstream UI functions not implemented on this hardware */
+bool config_screen_is_active(void) { return false; }
+void config_screen_toggle(void) {}
+void display_show_message_card(const char *title, const char *body) {
+    (void)title; (void)body;
+}
+void display_show_banner(void) {}
+void display_cycle_backlight(void) {}
+void display_set_backlight_percent(uint8_t pct) { (void)pct; }

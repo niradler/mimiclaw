@@ -24,6 +24,75 @@ A loud pop/click noise occurs at the END of audio playback on the Xingzhi Cube E
 
 ## Attempted Fixes (All Failed)
 
+---
+
+## SESSION 2 — Diagnostic Testing & New Attempts (Feb 2026)
+
+### Diagnostic Framework Added
+Added `tts_test <text> [mode]` to the serial CLI with 5 diagnostic modes to isolate root cause:
+- **Mode 0**: Baseline (normal processing)
+- **Mode 1** `chop_tail`: Drop last 1s of PCM before playback
+- **Mode 2** `long_fade`: 2-second fade-out instead of 50ms
+- **Mode 3** `peak_clamp`: Hard-limit samples to ±8000
+- **Mode 4** `no_pa_off`: Skip PA GPIO disable at shutdown
+- **Mode 5** `mute_first`: Mute codec BEFORE silence flush
+
+Also fixed CLI task stack from 4096 → 16384 bytes (was crashing due to TLS stack overflow in CLI task, unrelated to audio).
+
+### Diagnostic Test Results
+
+| Mode | Result | Implication |
+|------|--------|-------------|
+| 1 (chop 1s) | Same noise but **shorter** | Noise duration scales with audio length |
+| 2 (2s fade) | Same but noise **fades out** | Fade affects noise character |
+| 3 (peak clamp ±8000) | Noise **slightly reduced** | Noise is amplitude-dependent |
+| 4 (no PA off) | **Same as mode 3** | PA GPIO toggle is NOT the root cause |
+| 5 (mute first) | **Same as mode 3** | Shutdown sequence order is NOT the root cause |
+
+**Key conclusion from diagnostics**: The noise is amplitude/energy dependent (mode 3 helps), fade-responsive (mode 2 changes its character), and is NOT caused by PA GPIO toggling or shutdown sequence order (modes 4, 5 ineffective). Points to analog coupling capacitor discharge when signal energy drops — the codec continues to release stored energy after signal stops.
+
+### Attempt 5: Proper API Mute (`esp_codec_dev_set_out_mute`)
+Switched from `audio_hal_set_volume(0)` to `esp_codec_dev_set_out_mute(dev, true)` which writes the ES8311's dedicated mute register rather than just volume. Also added `flush_dma_silence()` writing one full DMA buffer depth of zeros before muting.
+
+**Sequence**:
+```
+flush_dma_silence → esp_codec_dev_set_out_mute(true) → wait DMA_DRAIN_MS → PA off → unmute
+```
+**Result**: Still noise.
+
+### Attempt 6: Removed Dual PA Pin Ownership
+Discovered `es8311_codec_cfg_t.pa_pin = MIMI_SPEAKER_EN` was set, meaning the codec driver also thought it owned the PA GPIO. Changed to `pa_pin = -1` to give sole ownership to `audio_hal_speaker_pa()`.
+
+**Result**: Still noise.
+
+### Attempt 7: I2S Channel Disable Before PA Off
+Stopped the I2S BCLK/MCLK (via `i2s_channel_disable`) between codec mute and PA disable so the codec sees no clock activity when PA drops:
+```
+flush_silence → set_out_mute → i2s_channel_disable → wait → PA off → i2s_channel_enable → unmute
+```
+**Result**: Still noise. (This was superseded by Attempt 8.)
+
+### Attempt 8: esp_codec_dev_close() / re-open per session (xiaozhi-esp32 pattern)
+Studied the xiaozhi-esp32 project (24K stars, same ES8311 hardware). Their pattern:
+- `esp_codec_dev_close()` at end of playback → triggers ES8311 full shutdown: soft-mute ramp → DAC power off → I2S TX disable (all in hardware-specified order)
+- PA off after close
+- `esp_codec_dev_open()` immediately to ready for next session
+
+This is the "correct" ESP codec lifecycle usage — not keeping codec permanently open.
+
+**Current shutdown code**:
+```c
+flush_dma_silence(dev);
+esp_codec_dev_close(dev);        // ES8311: soft-mute → DAC off → I2S disable
+vTaskDelay(pdMS_TO_TICKS(20));
+audio_hal_speaker_pa(false);
+esp_codec_dev_open(dev, &fs);   // Re-open for next session
+esp_codec_dev_set_out_vol(dev, 60);
+```
+**Result**: Still noise. The noise character seems to be in the analog/hardware layer, above what software shutdown sequences can address.
+
+---
+
 ### Attempt 1: Immediate PA Disable After Write
 **Code**: 
 ```c
@@ -200,11 +269,65 @@ If available:
 - `main/voice/tts_client.c` - TTS format and sample rate handling
 - `main/voice/voice_channel.c` - Response handling and playback flow
 
-## Conclusion
-The audio pop/click at end of playback is a persistent hardware/driver issue that hasn't been solved by:
-- Timing adjustments
-- Codec muting
-- Silence injection
-- PA enable sequencing
+## Current State of Code (after Session 2)
+- `main/audio/audio_player.c`: Uses `esp_codec_dev_close()` + re-open per session, `pa_pin = -1`
+- `main/audio/audio_hal.c`: ES8311 init with `pa_pin = -1`, PA managed solely by `audio_hal_speaker_pa()`
+- `main/cli/serial_cli.c`: `tts_test <text> [mode 0-5]` diagnostic command, CLI task stack = 16384 bytes
+- `main/audio/audio_player.h`: Added `audio_player_play_pcm_diag()` declaration
 
-Need to investigate at a deeper level, possibly involving ES8311 codec register control, I2S channel lifecycle, or hardware-level solutions (capacitors, pulldowns, etc.).
+## What Has NOT Been Tried Yet
+
+### Hardware-level
+- **Oscilloscope/logic analyzer**: Capture PA enable GPIO + BCLK/LRCLK + speaker output simultaneously. This would definitively show when the noise occurs relative to the signal
+- **Capacitor on PA enable line**: Some boards need a RC filter on the PA enable GPIO to slow the PA turn-off edge and prevent switching transient
+- **Direct speaker measurement**: Is the noise electrical (measurable with meter at speaker terminals) or acoustic (only heard, possibly board resonance)?
+
+### Software — Not Tried
+- **`audio_test` tone playback**: Does `audio_player_play_tone()` (synthesized sine wave, no TTS/resampling) have the same noise? If NO → noise is in the PCM/resampling data. If YES → it's pure hardware/shutdown
+- **Volume ramp during playback**: Gradually lower output volume to 0 over the last 500ms WHILE audio is still playing (not just fading the PCM buffer)
+- **ES8311 direct register write**: Write to ES8311 `0x31` (DAC_REG31) DACMUTE bit directly via I2C, bypassing the `esp_codec_dev` abstraction, to ensure mute actually takes effect
+- **Zero the last 500ms completely** (hard memset to 0, not fade) — tests if the noise is literally in the PCM samples vs the transition
+- **Leave PA permanently on**: Don't toggle PA at all between utterances — tests if the noise is ONLY from PA switching
+
+### Architecture
+- **Compare with voice_channel task**: The original voice channel TTS worked — does it still have the noise? If YES → noise is always there. If NO → something different about that code path
+
+## Hypotheses Remaining
+
+1. **Analog discharge is unavoidable in software** — The ES8311/speaker coupling capacitors store enough energy that software can't bleed it fast enough. May need a hardware fix (bleed resistor across speaker output, or RC on PA enable)
+2. **Noise is IN the TTS PCM tail** — The resampler (24kHz→16kHz) leaves an oscillating tail in the last ~100ms of samples. `audio_test` tone would rule this out
+3. **ES8311 internal pop on DAC power-off** — `esp_codec_dev_close()` may trigger a register sequence that causes the ES8311 to pop internally. Writing DACMUTE first via direct I2C and waiting longer before closing could help
+
+## ✅ RESOLVED — Root Cause Found & Workaround Applied
+
+### Key Diagnostic Breakthrough
+Running `audio_test` (tone generator) produced **zero noise**. This definitively ruled out hardware, PA switching, DMA, and shutdown sequence as the root cause. The noise is entirely in the **PCM data itself**.
+
+### Root Cause
+The 24kHz → 16kHz resampler in `tts_client.c` uses naive decimation without a proper anti-aliasing FIR filter. This leaves an oscillating noise tail in the last 2–3 seconds of the resampled PCM buffer. The "hardware" noise we were chasing was actually this resampler artifact being amplified and played.
+
+### Workaround (in `audio_player.c` — `apply_audio_cleanup`)
+Zero the last 3 seconds of PCM + 300ms fade before the silence region:
+```c
+// 300ms fade-out
+size_t fade_samples = (size_t)(0.3f * sample_rate);
+for (size_t i = 0; i < fade_samples; i++) {
+    size_t idx = num_samples - fade_samples + i;
+    float f = 1.0f - ((float)i / (float)fade_samples);
+    samples[idx] = (int16_t)((float)samples[idx] * f);
+}
+// Zero last 3 seconds (kills resampler tail noise)
+size_t silence_samples = (size_t)(3.0f * sample_rate);
+memset(samples + num_samples - silence_samples, 0, silence_samples * sizeof(int16_t));
+```
+**Result: No noise. ✅**
+
+### Proper Fix (TODO)
+The workaround wastes 3 seconds of audio (cuts off the tail of speech). Proper fix is one of:
+1. **Use a proper anti-aliasing FIR filter** in the resampler in `tts_client.c` before decimating 24kHz→16kHz
+2. **Request 16kHz directly from OpenAI TTS API** — pass `sample_rate=16000` in the request. This eliminates resampling entirely and is the cleanest solution
+3. **Use a polyphase filter bank** for the 3:2 ratio resampling
+
+Option 2 is likely zero-effort if the OpenAI TTS endpoint supports it.
+
+TODO marker in code: `main/audio/audio_player.c` — `apply_audio_cleanup()`

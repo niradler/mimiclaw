@@ -194,7 +194,7 @@ static esp_err_t init_codecs(void)
 
     es8311_codec_cfg_t es8311_cfg = {
         .ctrl_if = es8311_ctrl,
-        .pa_pin = MIMI_SPEAKER_EN,
+        .pa_pin = -1,
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC,
         .use_mclk = true,
     };

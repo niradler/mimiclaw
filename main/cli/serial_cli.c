@@ -572,14 +572,17 @@ static int cmd_stt_test(int argc, char **argv)
     if (!buf) { printf("Out of memory\n"); return 1; }
 
     printf("Recording %d s...\n", secs);
-    size_t read_bytes = 0;
-    esp_codec_dev_read(in_dev, buf, total_bytes, &read_bytes);
-    printf("Recorded %u bytes. Sending to STT...\n", (unsigned)read_bytes);
+    int read_bytes = esp_codec_dev_read(in_dev, buf, (int)total_bytes);
+    if (read_bytes <= 0) {
+        printf("Recording failed\n");
+        free(buf);
+        return 1;
+    }
+    printf("Recorded %d bytes. Sending to STT...\n", read_bytes);
 
     char *transcript = calloc(1, 1024);
     if (transcript) {
-        esp_err_t err = stt_transcribe_pcm(buf, read_bytes / sizeof(int16_t),
-                                           MIMI_AUDIO_SAMPLE_RATE, transcript, 1024);
+        esp_err_t err = stt_transcribe(buf, (size_t)read_bytes, transcript, 1024);
         if (err == ESP_OK) {
             printf("STT: %s\n", transcript);
         } else {
@@ -594,6 +597,7 @@ static int cmd_stt_test(int argc, char **argv)
 /* --- tts_test command --- */
 static struct {
     struct arg_str *text;
+    struct arg_int *mode;
     struct arg_end *end;
 } tts_test_args;
 
@@ -605,17 +609,24 @@ static int cmd_tts_test(int argc, char **argv)
         return 1;
     }
     const char *text = tts_test_args.text->sval[0];
-    printf("Synthesizing TTS: %s\n", text);
-    uint8_t *mp3_buf = NULL;
-    size_t mp3_len = 0;
-    esp_err_t err = tts_synthesize(text, &mp3_buf, &mp3_len);
-    if (err != ESP_OK) {
+    int mode = (tts_test_args.mode->count > 0) ? tts_test_args.mode->ival[0] : 0;
+
+    printf("Synthesizing TTS (diag mode=%d): %s\n", mode, text);
+    printf("Modes: 0=baseline 1=chop_tail 2=long_fade 3=peak_clamp 4=no_pa_off 5=mute_first\n");
+
+    uint8_t *pcm_buf = heap_caps_malloc(MIMI_VOICE_TTS_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!pcm_buf) { printf("Out of memory\n"); return 1; }
+
+    size_t pcm_len = 0;
+    esp_err_t err = tts_synthesize(text, pcm_buf, MIMI_VOICE_TTS_BUF_SIZE, &pcm_len);
+    if (err != ESP_OK || pcm_len == 0) {
         printf("TTS failed: %s\n", esp_err_to_name(err));
+        free(pcm_buf);
         return 1;
     }
-    printf("TTS OK (%u bytes), playing...\n", (unsigned)mp3_len);
-    audio_player_play_mp3(mp3_buf, mp3_len);
-    free(mp3_buf);
+    printf("TTS OK (%u bytes PCM), playing...\n", (unsigned)pcm_len);
+    audio_player_play_pcm_diag((const int16_t *)pcm_buf, pcm_len, mode);
+    free(pcm_buf);
     return 0;
 }
 
@@ -656,6 +667,7 @@ esp_err_t serial_cli_init(void)
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_config.prompt = "mimi> ";
     repl_config.max_cmdline_length = 256;
+    repl_config.task_stack_size = 16384;
 
     /* USB Serial JTAG */
     esp_console_dev_usb_serial_jtag_config_t hw_config =
@@ -917,10 +929,11 @@ esp_err_t serial_cli_init(void)
 
     /* tts_test */
     tts_test_args.text = arg_str1(NULL, NULL, "<text>", "Text to synthesize and play");
-    tts_test_args.end = arg_end(1);
+    tts_test_args.mode = arg_int0(NULL, NULL, "<mode>", "0=baseline 1=chop_tail 2=long_fade 3=peak_clamp 4=no_pa_off 5=mute_first");
+    tts_test_args.end = arg_end(3);
     esp_console_cmd_t tts_test_cmd = {
         .command = "tts_test",
-        .help = "Synthesize text with TTS and play through speaker",
+        .help = "TTS diag: tts_test <text> [mode 0-5] (0=baseline,1=chop,2=long_fade,3=peak,4=no_pa,5=mute_first)",
         .func = &cmd_tts_test,
         .argtable = &tts_test_args,
     };

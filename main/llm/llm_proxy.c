@@ -250,13 +250,13 @@ static esp_err_t llm_http_direct(const char *post_data, resp_buf_t *rb, int *out
     esp_http_client_set_header(client, "Content-Type", "application/json");
     if (s_api_url[0] != '\0') {
         /* Custom URL: send both auth headers so any backend works */
-        char auth[264];
+        char auth[LLM_API_KEY_MAX_LEN + 16];
         snprintf(auth, sizeof(auth), "Bearer %s", s_api_key);
         esp_http_client_set_header(client, "Authorization", auth);
         esp_http_client_set_header(client, "x-api-key", s_api_key);
         esp_http_client_set_header(client, "anthropic-version", MIMI_LLM_API_VERSION);
     } else if (provider_is_openai()) {
-        char auth[264];
+        char auth[LLM_API_KEY_MAX_LEN + 16];
         snprintf(auth, sizeof(auth), "Bearer %s", s_api_key);
         esp_http_client_set_header(client, "Authorization", auth);
     } else {

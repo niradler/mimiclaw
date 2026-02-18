@@ -29,3 +29,15 @@ esp_err_t audio_player_play_pcm(const int16_t *pcm_data, size_t pcm_len);
  * Parses the header, extracts PCM data, and plays it.
  */
 esp_err_t audio_player_play_wav(const uint8_t *wav_data, size_t wav_len);
+
+/**
+ * Diagnostic playback with selectable test mode for end-of-audio noise root cause analysis.
+ *
+ * mode 0 = baseline (same as audio_player_play_pcm)
+ * mode 1 = chop_tail: drop last 1s of PCM before playback
+ * mode 2 = long_fade: 2s fade-out instead of 50ms
+ * mode 3 = peak_clamp: hard-limit samples to ±8000
+ * mode 4 = no_pa_off: skip PA GPIO disable during shutdown
+ * mode 5 = mute_first: mute codec BEFORE silence flush
+ */
+esp_err_t audio_player_play_pcm_diag(const int16_t *pcm_data, size_t pcm_len, int mode);
